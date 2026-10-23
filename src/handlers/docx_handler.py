@@ -11,7 +11,13 @@ class DocxHandler(BaseDocumentHandler):
 
     def extract_text(self) -> str:
         doc = Document(self.file_path)
-        return "\n".join([p.text for p in doc.paragraphs if p.text])
+        full_text = [p.text for p in doc.paragraphs if p.text]
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if cell.text:
+                        full_text.append(cell.text)
+        return "\n".join(full_text)
 
     def process_and_save(self, output_path: Path, transform_func: Callable[[str], str]) -> None:
         pass
