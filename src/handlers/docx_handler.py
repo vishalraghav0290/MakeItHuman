@@ -1,55 +1,205 @@
-import logging
+"""
+High-Speed Deep-XML Word (.docx) Engine (v3.0).
+Rewrites all <w:r> text nodes (including inside hyperlinks and smartTags) while preserving
+exact <w:rPr> styling and executing paragraph humanization concurrently across threads.
+"""
+
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
+
 from docx import Document
-from src.handlers.base import BaseDocumentHandler
+from docx.oxml.ns import qn
+from docx.table import Table
+from docx.text.paragraph import Paragraph
 
-logger = logging.getLogger(__name__)
+from src.detector import AcademicAIDetector
+from src.humanizer import AcademicHumanizer, HumanizationResult
 
-class DocxHandler(BaseDocumentHandler):
+
+class DocxHandler:
     """
-    Handles extraction and in-place textual replacement for Microsoft Word (.docx) files.
+    Extracts and rewrites .docx paragraphs at the raw XML <w:t> node level so
+    even paragraphs containing hyperlinks, fields, or split runs are 100% updated.
     """
+
+    def __init__(
+        self,
+        detector: AcademicAIDetector | None = None,
+        humanizer: AcademicHumanizer | None = None,
+        max_workers: int = 8,
+    ) -> None:
+        if isinstance(detector, (str, Path)):
+            self.file_path = Path(detector)
+            self.detector = AcademicAIDetector()
+        else:
+            self.detector = detector or AcademicAIDetector()
+        self.humanizer = humanizer
+        self.max_workers = max_workers
+
+    def _iter_table_paragraphs(self, table: Table, seen_p: set[int]) -> list[Paragraph]:
+        paragraphs: list[Paragraph] = []
+        seen_cells: set[int] = set()
+        for row in table.rows:
+            for cell in row.cells:
+                cell_id = id(cell._tc)
+                if cell_id in seen_cells:
+                    continue
+                seen_cells.add(cell_id)
+                for p in cell.paragraphs:
+                    p_id = id(p._p)
+                    if p_id not in seen_p and p.text and p.text.strip():
+                        seen_p.add(p_id)
+                        paragraphs.append(p)
+                for nested in cell.tables:
+                    paragraphs.extend(self._iter_table_paragraphs(nested, seen_p))
+        return paragraphs
+
+    def collect_all_paragraphs(self, doc: Document) -> list[Paragraph]:
+        all_paragraphs: list[Paragraph] = []
+        seen_p: set[int] = set()
+
+        for p in doc.paragraphs:
+            p_id = id(p._p)
+            if p_id not in seen_p and p.text and p.text.strip():
+                seen_p.add(p_id)
+                all_paragraphs.append(p)
+
+        for table in doc.tables:
+            all_paragraphs.extend(self._iter_table_paragraphs(table, seen_p))
+
+        for section in doc.sections:
+            for container in (
+                section.header,
+                section.first_page_header,
+                section.even_page_header,
+                section.footer,
+                section.first_page_footer,
+                section.even_page_footer,
+            ):
+                if container is not None and not container.is_linked_to_previous:
+                    for p in container.paragraphs:
+                        p_id = id(p._p)
+                        if p_id not in seen_p and p.text and p.text.strip():
+                            seen_p.add(p_id)
+                            all_paragraphs.append(p)
+                    for table in container.tables:
+                        all_paragraphs.extend(self._iter_table_paragraphs(table, seen_p))
+
+        return all_paragraphs
+
+    @classmethod
+    def redistribute_text_across_runs(cls, paragraph: Paragraph, new_text: str) -> None:
+        """
+        Locates all <w:t> XML text nodes inside the paragraph (including those nested inside
+        <w:hyperlink> or <w:r> elements) while skipping <m:oMath> equation nodes, and
+        redistributes new_text proportionally across them.
+        """
+        t_nodes = [
+            elem for elem in paragraph._p.iter(qn("w:t"))
+            if elem.text and len(elem.text) > 0
+        ]
+
+        if not t_nodes:
+            if paragraph.runs:
+                paragraph.runs[0].text = new_text
+            else:
+                paragraph.add_run(new_text)
+            return
+
+        if len(t_nodes) == 1:
+            t_nodes[0].text = new_text
+            return
+
+        orig_lengths = [len(t.text) for t in t_nodes]
+        total_orig_chars = max(1, sum(orig_lengths))
+        words = new_text.split(" ")
+        total_words = len(words)
+
+        word_cursor = 0
+        cumulative_chars = 0
+
+        for pos, t_node in enumerate(t_nodes):
+            is_last = pos == len(t_nodes) - 1
+            cumulative_chars += orig_lengths[pos]
+
+            if is_last:
+                chunk_words = words[word_cursor:]
+            else:
+                target_end = round((cumulative_chars / total_orig_chars) * total_words)
+                target_end = max(word_cursor, min(total_words, target_end))
+                chunk_words = words[word_cursor:target_end]
+                word_cursor = target_end
+
+            segment = " ".join(chunk_words)
+            if segment and not is_last:
+                segment += " "
+                t_node.set(qn("xml:space"), "preserve")
+            t_node.text = segment
+
+    def extract_blocks(self, input_path: Path) -> list[str]:
+        doc = Document(str(input_path))
+        paragraphs = self.collect_all_paragraphs(doc)
+        return [p.text.strip() for p in paragraphs if p.text.strip()]
 
     def extract_text(self) -> str:
-        try:
-            doc = Document(self.file_path)
-            full_text = []
-            for para in doc.paragraphs:
-                if para.text:
-                    full_text.append(para.text)
-            
-            # Also extract from tables
-            for table in doc.tables:
-                for row in table.rows:
-                    for cell in row.cells:
-                        if cell.text:
-                            full_text.append(cell.text)
-
-            return "\n".join(full_text)
-        except Exception as e:
-            logger.error(f"Failed to extract text from DOCX: {e}")
-            raise
+        """Backward compatibility method for legacy callers."""
+        if hasattr(self, "file_path"):
+            return "\n".join(self.extract_blocks(self.file_path))
+        raise AttributeError("No file_path provided at initialization")
 
     def process_and_save(self, output_path: Path, transform_func: Callable[[str], str]) -> None:
-        try:
-            doc = Document(self.file_path)
+        """Backward compatibility method for legacy callers."""
+        if not hasattr(self, "file_path"):
+            raise AttributeError("No file_path provided at initialization")
+        doc = Document(str(self.file_path))
+        paragraphs = self.collect_all_paragraphs(doc)
+        for p in paragraphs:
+            if p.text.strip():
+                new_text = transform_func(p.text)
+                self.redistribute_text_across_runs(p, new_text)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        doc.save(str(output_path))
 
-            # Process body paragraphs
-            for para in doc.paragraphs:
-                if para.text.strip():
-                    para.text = transform_func(para.text)
+    def process_document(
+        self,
+        input_path: Path,
+        output_path: Path,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> list[HumanizationResult]:
+        if self.humanizer is None:
+            self.humanizer = AcademicHumanizer(detector=self.detector)
 
-            # Process table cells
-            for table in doc.tables:
-                for row in table.rows:
-                    for cell in row.cells:
-                        for para in cell.paragraphs:
-                            if para.text.strip():
-                                para.text = transform_func(para.text)
+        doc = Document(str(input_path))
+        paragraphs = self.collect_all_paragraphs(doc)
+        total = len(paragraphs)
+        raw_texts = [p.text for p in paragraphs]
 
-            doc.save(str(output_path))
-            logger.info(f"Successfully processed and saved DOCX to {output_path}")
-        except Exception as e:
-            logger.error(f"Error processing DOCX: {e}")
-            raise
+        results: list[HumanizationResult | None] = [None] * total
+        completed_count = 0
+
+        # Parallel execution across paragraphs for maximum throughput
+        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+            future_to_idx = {
+                pool.submit(self.humanizer.humanize_paragraph, txt): i
+                for i, txt in enumerate(raw_texts)
+            }
+            for future in future_to_idx:
+                idx = future_to_idx[future]
+                results[idx] = future.result()
+                completed_count += 1
+                if progress_callback:
+                    progress_callback(completed_count, total)
+
+        final_results: list[HumanizationResult] = []
+        for paragraph, res in zip(paragraphs, results):
+            assert res is not None
+            if res.modified:
+                self.redistribute_text_across_runs(paragraph, res.humanized_text)
+            final_results.append(res)
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        doc.save(str(output_path))
+        return final_results
