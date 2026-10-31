@@ -1,7 +1,7 @@
 """
-High-Speed Deep-XML Word (.docx) Engine (v3.0).
-Rewrites all <w:r> text nodes (including inside hyperlinks and smartTags) while preserving
-exact <w:rPr> styling and executing paragraph humanization concurrently across threads.
+Deep-XML Word (.docx) Engine (v4.0).
+Iterates all <w:p> nodes across the entire XML tree (including <w:sdt> content controls,
+tables, lists, and textboxes) while preserving 100% of Run-level <w:rPr> formatting.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ from typing import Callable
 
 from docx import Document
 from docx.oxml.ns import qn
-from docx.table import Table
 from docx.text.paragraph import Paragraph
 
 from src.detector import AcademicAIDetector
@@ -20,10 +19,7 @@ from src.humanizer import AcademicHumanizer, HumanizationResult
 
 
 class DocxHandler:
-    """
-    Extracts and rewrites .docx paragraphs at the raw XML <w:t> node level so
-    even paragraphs containing hyperlinks, fields, or split runs are 100% updated.
-    """
+    """Extracts and rewrites every <w:p> element in the document body without losing formatting."""
 
     def __init__(
         self,
@@ -39,64 +35,24 @@ class DocxHandler:
         self.humanizer = humanizer
         self.max_workers = max_workers
 
-    def _iter_table_paragraphs(self, table: Table, seen_p: set[int]) -> list[Paragraph]:
-        paragraphs: list[Paragraph] = []
-        seen_cells: set[int] = set()
-        for row in table.rows:
-            for cell in row.cells:
-                cell_id = id(cell._tc)
-                if cell_id in seen_cells:
-                    continue
-                seen_cells.add(cell_id)
-                for p in cell.paragraphs:
-                    p_id = id(p._p)
-                    if p_id not in seen_p and p.text and p.text.strip():
-                        seen_p.add(p_id)
-                        paragraphs.append(p)
-                for nested in cell.tables:
-                    paragraphs.extend(self._iter_table_paragraphs(nested, seen_p))
-        return paragraphs
-
     def collect_all_paragraphs(self, doc: Document) -> list[Paragraph]:
         all_paragraphs: list[Paragraph] = []
         seen_p: set[int] = set()
 
-        for p in doc.paragraphs:
-            p_id = id(p._p)
-            if p_id not in seen_p and p.text and p.text.strip():
+        # Walk every <w:p> in body (covers normal paragraphs, tables, SDT content controls, and textboxes)
+        for p_elem in doc.element.body.iter(qn("w:p")):
+            p_id = id(p_elem)
+            if p_id in seen_p:
+                continue
+            p_obj = Paragraph(p_elem, doc)
+            if p_obj.text and p_obj.text.strip():
                 seen_p.add(p_id)
-                all_paragraphs.append(p)
-
-        for table in doc.tables:
-            all_paragraphs.extend(self._iter_table_paragraphs(table, seen_p))
-
-        for section in doc.sections:
-            for container in (
-                section.header,
-                section.first_page_header,
-                section.even_page_header,
-                section.footer,
-                section.first_page_footer,
-                section.even_page_footer,
-            ):
-                if container is not None and not container.is_linked_to_previous:
-                    for p in container.paragraphs:
-                        p_id = id(p._p)
-                        if p_id not in seen_p and p.text and p.text.strip():
-                            seen_p.add(p_id)
-                            all_paragraphs.append(p)
-                    for table in container.tables:
-                        all_paragraphs.extend(self._iter_table_paragraphs(table, seen_p))
+                all_paragraphs.append(p_obj)
 
         return all_paragraphs
 
     @classmethod
     def redistribute_text_across_runs(cls, paragraph: Paragraph, new_text: str) -> None:
-        """
-        Locates all <w:t> XML text nodes inside the paragraph (including those nested inside
-        <w:hyperlink> or <w:r> elements) while skipping <m:oMath> equation nodes, and
-        redistributes new_text proportionally across them.
-        """
         t_nodes = [
             elem for elem in paragraph._p.iter(qn("w:t"))
             if elem.text and len(elem.text) > 0
@@ -180,7 +136,6 @@ class DocxHandler:
         results: list[HumanizationResult | None] = [None] * total
         completed_count = 0
 
-        # Parallel execution across paragraphs for maximum throughput
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             future_to_idx = {
                 pool.submit(self.humanizer.humanize_paragraph, txt): i

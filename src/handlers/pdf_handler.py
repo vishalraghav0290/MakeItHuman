@@ -11,7 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-import fitz  # PyMuPDF
+try:
+    import pymupdf as fitz
+except ImportError:
+    import fitz
 
 from src.detector import AcademicAIDetector
 from src.humanizer import AcademicHumanizer, HumanizationResult
