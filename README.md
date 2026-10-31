@@ -41,3 +41,4 @@ doc-humanizer humanize report.docx
 # Or specify a custom output path
 doc-humanizer humanize presentation.pptx -o humanized_deck.pptx
 ```
+

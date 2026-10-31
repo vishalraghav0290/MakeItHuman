@@ -1,101 +1,162 @@
-import sys
-import logging
-from pathlib import Path
-import click
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
+"""Typer + Rich CLI entry point for doc-humanizer-cli (v4.0)."""
 
-from src.detector import AIDetector
-from src.humanizer import TextHumanizer
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Annotated, Optional
+
+import typer
+from rich.console import Console
+from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
+from rich.table import Table
+
+from src.detector import AcademicAIDetector, DetectionMetrics
 from src.handlers.docx_handler import DocxHandler
 from src.handlers.pdf_handler import PDFHandler
-from src.handlers.pptx_handler import PPTXHandler
+from src.humanizer import AcademicHumanizer, HumanizationResult
 
-# Setup console for rich outputs
+app = typer.Typer(
+    name="doc-humanizer",
+    help="Turnitin-Calibrated Academic AI Scorer & Dense Clause-Mutating Humanizer.",
+    add_completion=False,
+)
 console = Console()
+SUPPORTED_EXTENSIONS = {".pdf", ".docx"}
 
-# Configure basic logging
-logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
-logger = logging.getLogger("doc-humanizer")
 
-def get_handler(file_path: Path):
-    """
-    Factory resolving the appropriate document handler by file extension.
-    """
-    suffix = file_path.suffix.lower()
-    if suffix == ".docx":
-        return DocxHandler(file_path)
-    elif suffix == ".pdf":
-        return PDFHandler(file_path)
-    elif suffix == ".pptx":
-        return PPTXHandler(file_path)
-    else:
-        raise ValueError(f"Unsupported file format '{suffix}'. Supported: .pdf, .docx, .pptx")
+def _validate_paths(input_path: Path, output_path: Path | None = None) -> tuple[str, Path]:
+    if not input_path.exists() or not input_path.is_file():
+        console.print(f"[bold red]Error:[/bold red] Input file not found: '{input_path}'")
+        raise typer.Exit(code=1)
 
-@click.group()
-@click.option("--verbose", is_flag=True, help="Enable debug logging output.")
-def main(verbose: bool):
-    """Doc Humanizer CLI - Detect and humanize AI artifacts in documents."""
-    if verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+    in_ext = input_path.suffix.lower()
+    if in_ext not in SUPPORTED_EXTENSIONS:
+        console.print(
+            f"[bold red]Error:[/bold red] Unsupported file format '{in_ext}'. "
+            f"Only {', '.join(sorted(SUPPORTED_EXTENSIONS))} are supported."
+        )
+        raise typer.Exit(code=1)
 
-@main.command()
-@click.argument("file", type=click.Path(exists=True, path_type=Path))
-def scan(file: Path):
-    """Scan a document and display an AI-likelihood score and markers."""
-    try:
-        handler = get_handler(file)
-        console.print(f"[cyan]Reading content from:[/] {file.name}")
-        text = handler.extract_text()
+    resolved_out = output_path or input_path.with_name(f"{input_path.stem}_humanized{in_ext}")
+    if resolved_out.suffix.lower() != in_ext:
+        console.print(
+            f"[bold red]Strict Format Parity Violation:[/bold red] Input is '{in_ext}' "
+            f"but output was specified as '{resolved_out.suffix}'. Output MUST be '{in_ext}'."
+        )
+        raise typer.Exit(code=1)
 
-        if not text.strip():
-            console.print("[yellow]Warning:[/] No extractable text found in file.")
-            return
+    return in_ext, resolved_out
 
-        detector = AIDetector()
-        results = detector.analyze(text)
 
-        # Output formatting
-        score = results["score"]
-        score_color = "green" if score < 0.3 else "yellow" if score < 0.7 else "red"
-        
-        table = Table(title="Document AI Analysis", show_header=True)
-        table.add_column("Metric", style="dim")
-        table.add_column("Value")
+def _format_risk_color(ai_prob: float, threshold: float = 15.0) -> str:
+    if ai_prob <= threshold:
+        return f"[bold green]{ai_prob:.1f}% (*)[/bold green]"
+    if ai_prob < 25.0:
+        return f"[bold yellow]{ai_prob:.1f}%[/bold yellow]"
+    return f"[bold red]{ai_prob:.1f}%[/bold red]"
 
-        table.add_row("Likelihood Score", f"[{score_color}]{score * 100:.1f}%[/{score_color}]")
-        table.add_row("Sentence Variance", str(results["sentence_variance"]))
-        table.add_row("Detected Buzzwords", ", ".join(results["matches"]) if results["matches"] else "None")
 
-        console.print(table)
+@app.command("scan")
+def scan_command(
+    input_path: Annotated[Path, typer.Argument(help="Path to .pdf or .docx file to scan.")],
+    threshold: Annotated[float, typer.Option("--threshold", "-t")] = 15.0,
+) -> None:
+    """Scan a .pdf or .docx document and report Turnitin-calibrated AI probability."""
+    ext, _ = _validate_paths(input_path)
+    detector = AcademicAIDetector()
+    handler = DocxHandler(detector) if ext == ".docx" else PDFHandler(detector)
+    blocks = handler.extract_blocks(input_path)
+    doc_metrics = detector.score_document(blocks)
 
-    except Exception as e:
-        console.print(f"[bold red]Error during scan:[/] {e}")
-        sys.exit(1)
+    table = Table(title=f"Turnitin Diagnostic Report: {input_path.name}", header_style="bold magenta")
+    table.add_column("Metric", style="bold")
+    table.add_column("Score / Value", justify="right")
+    table.add_row("Turnitin Overall AI Score", _format_risk_color(doc_metrics.ai_probability, threshold))
+    table.add_row("Cyan Channel (Generative AI)", f"[cyan]{doc_metrics.cyan_ai_score:.1f}%[/cyan]")
+    table.add_row("Purple Channel (Paraphrased AI)", f"[magenta]{doc_metrics.purple_paraphrase_score:.1f}%[/magenta]")
+    table.add_row("Burstiness (CV + Lag-1 Delta)", f"{doc_metrics.burstiness:.3f}")
+    table.add_row("Perplexity Proxy (Surprisal)", f"{doc_metrics.perplexity_proxy:.2f}")
+    table.add_row("Total Prose Words Analyzed", str(doc_metrics.word_count))
+    console.print(table)
 
-@main.command()
-@click.argument("input_file", type=click.Path(exists=True, path_type=Path))
-@click.option("-o", "--output", type=click.Path(path_type=Path), help="Output path for the modified file.")
-def humanize(input_file: Path, output: Path):
-    """Rewrite robotic phrasing and restructure document content."""
-    try:
-        handler = get_handler(input_file)
-        
-        # Default output name if not provided
-        if not output:
-            output = input_file.parent / f"{input_file.stem}_humanized{input_file.suffix}"
 
-        console.print(f"[cyan]Processing:[/] {input_file.name} -> {output.name}")
-        
-        humanizer = TextHumanizer()
-        handler.process_and_save(output, transform_func=humanizer.humanize)
+@app.command("humanize")
+def humanize_command(
+    input_path: Annotated[Path, typer.Argument(help="Input .pdf or .docx document path.")],
+    output_path: Annotated[
+        Optional[Path],
+        typer.Option("--output", "-o", help="Output path (defaults to <name>_humanized.<ext>)."),
+    ] = None,
+    threshold: Annotated[float, typer.Option("--threshold", "-t")] = 15.0,
+    max_loops: Annotated[int, typer.Option("--max-loops", "-l")] = 4,
+    style: Annotated[str, typer.Option("--style", "-s")] = "academic",
+) -> None:
+    """Humanize all non-heading prose blocks in a .pdf or .docx document with 100% layout parity."""
+    ext, resolved_output = _validate_paths(input_path, output_path)
+    detector = AcademicAIDetector()
+    humanizer = AcademicHumanizer(
+        detector=detector,
+        threshold=threshold,
+        max_loops=max_loops,
+        style=style,
+    )
 
-        console.print(Panel(f"[bold green]Success![/] Humanized document saved to:\n{output.resolve()}", expand=False))
+    handler = DocxHandler(detector, humanizer) if ext == ".docx" else PDFHandler(detector, humanizer)
+    console.print(f"Processing: [bold cyan]{input_path.name}[/bold cyan] -> [bold green]{resolved_output.name}[/bold green]")
 
-    except Exception as e:
-        console.print(f"[bold red]Error during processing:[/] {e}")
-        sys.exit(1)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task_id = progress.add_task("Mutating N-grams & clause structures...", total=1)
+
+        def _update_bar(completed: int, total: int) -> None:
+            progress.update(task_id, total=max(1, total), completed=completed)
+
+        results: list[HumanizationResult] = handler.process_document(
+            input_path=input_path,
+            output_path=resolved_output,
+            progress_callback=_update_bar,
+        )
+
+    before_doc = detector.score_document([r.original_text for r in results])
+    after_doc = detector.score_document([r.humanized_text for r in results])
+    modified_count = sum(1 for r in results if r.modified)
+
+    table = Table(title="Before vs. After Telemetry", header_style="bold cyan")
+    table.add_column("Metric", style="bold white")
+    table.add_column("Before", justify="right")
+    table.add_column("After", justify="right")
+    table.add_row("Overall AI Score", _format_risk_color(before_doc.ai_probability, threshold), _format_risk_color(after_doc.ai_probability, threshold))
+    table.add_row("Burstiness", f"{before_doc.burstiness:.3f}", f"{after_doc.burstiness:.3f}")
+    table.add_row("Perplexity Proxy", f"{before_doc.perplexity_proxy:.1f}", f"{after_doc.perplexity_proxy:.1f}")
+    table.add_row("Active Rewrites", f"{len(results)} total blocks", f"[bold green]{modified_count} / {len(results)} rewritten[/bold green]")
+    console.print(table)
+
+    console.print(
+        Panel(
+            f"[bold green]Success! Humanized document saved to:[/bold green]\n{resolved_output.resolve()}\n\n"
+            f"Active Rewrites: [bold cyan]{modified_count} / {len(results)}[/bold cyan] blocks/paragraphs modified.",
+            border_style="green",
+        )
+    )
+
+
+def main():
+    app()
+
 
 if __name__ == "__main__":
-    main()
+    app()
