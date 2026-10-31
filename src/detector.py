@@ -1,6 +1,6 @@
 """
-Turnitin-Calibrated 6-Axis Statistical & Structural AI Detector (v3.0).
-Zero runtime regex compilation overhead; pre-compiled pattern tables for sub-millisecond scoring.
+Turnitin & ZeroGPT Calibrated N-Gram Predictability & Burstiness Detector (v4.0).
+Accurately flags 1-sentence bullet points and short project-report paragraphs.
 """
 
 from __future__ import annotations
@@ -13,81 +13,48 @@ from dataclasses import dataclass, field
 
 
 LLM_LEXICAL_WEIGHTS: dict[str, float] = {
-    "delve into": 4.5,
-    "delves into": 4.5,
-    "testament to": 4.2,
-    "plays a crucial role": 3.8,
-    "crucial role": 3.2,
-    "vital role": 3.0,
-    "pivotal role": 3.5,
-    "moreover": 2.4,
-    "furthermore": 2.4,
-    "consequently": 1.8,
-    "it is important to note": 4.0,
-    "it is worth noting": 3.8,
-    "tapestry": 4.8,
-    "intricate interplay": 4.6,
-    "shed light on": 3.4,
-    "sheds light on": 3.4,
-    "pave the way": 3.5,
-    "underscores the importance": 4.1,
-    "underscores": 2.6,
-    "in conclusion": 2.5,
-    "a myriad of": 3.9,
-    "paradigm shift": 3.4,
-    "seamless integration": 3.7,
-    "foster a sense of": 3.8,
-    "holistic approach": 3.5,
-    "groundbreaking": 3.1,
-    "in the realm of": 3.9,
-    "not only": 1.6,
-    "meticulously": 3.6,
-    "beacon of": 4.2,
-    "ever-evolving": 4.0,
-    "multifaceted": 3.3,
-    "nuanced": 2.5,
-    "comprehensive overview": 3.2,
-    "notably": 1.7,
-    "significantly": 1.5,
-    "demonstrates that": 1.4,
-    "exhibits": 1.3,
-    "facilitates": 1.9,
-    "utilizing": 2.1,
-    "leveraging": 2.8,
-    "synergy": 3.4,
-    "cornerstone": 3.3,
-    "paramount": 3.0,
-    "poised to": 3.5,
-    "navigating the": 3.4,
-    "landscape of": 2.9,
-    "this study": 1.5,
-    "the results indicate": 1.8,
-    "it is evident that": 2.6,
-    "plays an important role": 2.7,
-    "in order to": 1.4,
+    "delve into": 4.5, "delves into": 4.5, "testament to": 4.2, "crucial role": 3.5,
+    "vital role": 3.2, "pivotal role": 3.5, "important role": 2.8, "key role": 2.6,
+    "moreover": 2.8, "furthermore": 2.8, "consequently": 2.2, "additionally": 2.2,
+    "therefore": 1.8, "however": 1.5, "nonetheless": 2.4, "nevertheless": 2.4,
+    "it is important to note": 4.0, "it is worth noting": 3.8, "tapestry": 4.8,
+    "intricate interplay": 4.6, "shed light on": 3.4, "pave the way": 3.5,
+    "underscores": 3.0, "in conclusion": 2.6, "a myriad of": 3.9, "paradigm shift": 3.4,
+    "seamless integration": 3.8, "seamlessly": 3.2, "holistic approach": 3.5,
+    "holistic": 2.8, "groundbreaking": 3.1, "in the realm of": 3.9, "meticulously": 3.6,
+    "ever-evolving": 4.0, "multifaceted": 3.3, "nuanced": 2.5, "comprehensive": 2.4,
+    "notably": 2.0, "significantly": 1.8, "demonstrates": 1.8, "exhibits": 1.8,
+    "facilitates": 2.4, "facilitate": 2.4, "utilizing": 2.5, "utilize": 2.5,
+    "utilizes": 2.5, "leveraging": 3.0, "leverage": 2.8, "synergy": 3.4,
+    "cornerstone": 3.3, "paramount": 3.0, "poised to": 3.5, "landscape": 2.5,
+    "robust": 2.2, "scalable": 2.0, "streamline": 2.6, "streamlines": 2.6,
+    "empower": 2.8, "empowers": 2.8, "enhance": 2.0, "enhances": 2.0, "enhancing": 2.0,
+    "optimize": 2.0, "optimizing": 2.0, "ensure": 1.8, "ensures": 1.8, "ensuring": 1.8,
+    "provides a": 1.8, "allows for": 2.0, "enables": 1.8, "designed to": 1.9,
+    "aims to": 2.0, "focuses on": 1.8, "in order to": 2.0, "due to the": 1.8,
+    "as well as": 1.7, "such as": 1.5, "based on": 1.6, "associated with": 1.8,
 }
 
-# Pre-compile all lexical patterns once at module import (eliminates 20,000+ runtime compiles)
 COMPILED_LEXICAL_PATTERNS: list[tuple[str, re.Pattern[str], float]] = [
     (phrase, re.compile(rf"\b{re.escape(phrase)}\b", re.IGNORECASE), weight)
     for phrase, weight in LLM_LEXICAL_WEIGHTS.items()
 ]
 
-PREDICTABLE_COLLOCATIONS: set[tuple[str, str]] = {
-    ("this", "study"), ("the", "results"), ("results", "indicate"), ("indicate", "that"),
-    ("it", "is"), ("can", "be"), ("in", "this"), ("of", "the"), ("to", "the"),
-    ("on", "the"), ("for", "the"), ("with", "the"), ("from", "the"), ("by", "the"),
-    ("as", "a"), ("such", "as"), ("in", "order"), ("order", "to"), ("due", "to"),
-    ("based", "on"), ("play", "a"), ("plays", "a"), ("has", "been"), ("have", "been"),
-    ("was", "found"), ("were", "found"), ("is", "essential"), ("are", "essential"),
-    ("crucial", "for"), ("important", "to"), ("leads", "to"), ("contributes", "to"),
-    ("associated", "with"), ("compared", "to"), ("in", "addition"), ("as", "well"),
-    ("well", "as"), ("a", "significant"), ("significant", "impact"), ("further", "research"),
-}
-
-SPINNING_ARTIFACTS: set[str] = {
-    "markedly", "pronouncedly", "substantively", "aforementioned", "heretofore",
-    "thereby", "whereby", "wherein", "vis-a-vis", "henceforth", "inasmuch",
+# High-frequency GPT token bigrams that trigger ZeroGPT / Turnitin even in short 1-sentence blocks
+PREDICTABLE_BIGRAMS: set[tuple[str, str]] = {
+    ("this", "project"), ("the", "system"), ("system", "is"), ("is", "designed"),
+    ("designed", "to"), ("to", "provide"), ("provides", "a"), ("allows", "users"),
+    ("users", "to"), ("in", "order"), ("order", "to"), ("as", "well"), ("well", "as"),
+    ("such", "as"), ("based", "on"), ("can", "be"), ("it", "is"), ("of", "the"),
+    ("to", "the"), ("in", "the"), ("for", "the"), ("with", "the"), ("on", "the"),
+    ("by", "the"), ("from", "the"), ("and", "the"), ("that", "the"), ("is", "a"),
+    ("are", "used"), ("is", "used"), ("used", "to"), ("able", "to"), ("helps", "to"),
+    ("helps", "in"), ("ensures", "that"), ("ensure", "that"), ("focuses", "on"),
+    ("aims", "to"), ("plays", "a"), ("a", "key"), ("a", "crucial"), ("a", "vital"),
+    ("a", "comprehensive"), ("a", "robust"), ("a", "seamless"), ("user", "experience"),
+    ("real", "time"), ("data", "management"), ("efficient", "and"), ("and", "effective"),
+    ("and", "reliable"), ("and", "secure"), ("and", "scalable"), ("by", "utilizing"),
+    ("by", "leveraging"), ("through", "the"), ("across", "various"), ("various", "modules"),
 }
 
 ABBREV_PROTECT_REGEX = re.compile(
@@ -96,8 +63,13 @@ ABBREV_PROTECT_REGEX = re.compile(
 )
 SENTENCE_BOUNDARY_REGEX = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9(\[\"\'])")
 WORD_REGEX = re.compile(r"\b[a-zA-Z0-9'-]+\b")
-PUNCT_VARIETY_REGEX = re.compile(r"[;:—–\(\)\[\]\?]")
-EMPIRICAL_MARKER_REGEX = re.compile(r"\b\d+(?:\.\d+)?%?|\bp\s*[<>=]\s*0\.\d+")
+HEADING_OR_NOISE_REGEX = re.compile(
+    r"^(?:chapter\s+\d+|section\s+\d+|table\s+of\s+contents|list\s+of\s+(?:figures|tables)|"
+    r"references|bibliography|appendix|abstract|acknowledg(?:e)?ments|declaration|certificate|"
+    r"\d+(?:\.\d+)*\s+[A-Z][A-Za-z0-9\s\-–:&/]{1,65}|"
+    r".*\.{4,}\s*\d+)$",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -116,7 +88,23 @@ class DetectionMetrics:
 
 
 class AcademicAIDetector:
-    """Fast, pre-compiled 6-axis Turnitin-calibrated AI detector."""
+    """Evaluates both multi-sentence paragraphs and single-sentence project report blocks."""
+
+    def is_heading_or_metadata(self, text: str) -> bool:
+        stripped = text.strip()
+        if not stripped:
+            return True
+        words = stripped.split()
+        if len(words) < 6:
+            return True
+        # Skip TOC lines, numbered headings without terminal periods, code lines, URLs
+        if HEADING_OR_NOISE_REGEX.match(stripped):
+            return True
+        if len(words) <= 10 and not stripped.endswith((".", "!", "?", ":", ";")):
+            return True
+        if stripped.isupper() and len(words) <= 14:
+            return True
+        return False
 
     def split_sentences(self, text: str) -> list[str]:
         cleaned = re.sub(r"\s+", " ", text.strip())
@@ -152,11 +140,11 @@ class AcademicAIDetector:
         return "LEXICAL_HEAD"
 
     def calculate_perplexity_proxy(self, tokens: list[str], text: str) -> float:
-        if len(tokens) < 10:
-            return 72.0
+        if len(tokens) < 6:
+            return 75.0
 
         bigrams = list(zip(tokens[:-1], tokens[1:]))
-        predictable_hits = sum(1 for bg in bigrams if bg in PREDICTABLE_COLLOCATIONS)
+        predictable_hits = sum(1 for bg in bigrams if bg in PREDICTABLE_BIGRAMS)
         predictable_ratio = predictable_hits / max(1, len(bigrams))
 
         counts = Counter(tokens)
@@ -165,30 +153,29 @@ class AcademicAIDetector:
         word_lengths = [len(t) for t in tokens]
         len_std = statistics.stdev(word_lengths) if len(word_lengths) > 2 else 2.0
 
-        semi_colon_dash = len(PUNCT_VARIETY_REGEX.findall(text))
-        word_scale = max(1.0, len(tokens) / 100.0)
-        punct_variety_bonus = min(18.0, (semi_colon_dash / word_scale) * 3.8)
-
-        empirical_markers = len(EMPIRICAL_MARKER_REGEX.findall(text))
-        empirical_bonus = min(14.0, (empirical_markers / word_scale) * 2.5)
+        semi_colon_dash = len(re.findall(r"[;:—–\(\)\?]", text))
+        word_scale = max(0.5, len(tokens) / 50.0)
+        punct_bonus = min(20.0, (semi_colon_dash / word_scale) * 4.5)
 
         surprisal = (
-            (hapax_ratio * 62.0)
-            + (len_std * 7.5)
-            + punct_variety_bonus
-            + empirical_bonus
-            - (predictable_ratio * 145.0)
+            (hapax_ratio * 55.0)
+            + (len_std * 7.0)
+            + punct_bonus
+            - (predictable_ratio * 165.0)
         )
         return round(max(5.0, min(98.0, surprisal)), 2)
 
     def calculate_burstiness_and_pacing(self, sentences: list[str]) -> tuple[float, float]:
-        if len(sentences) < 2:
-            return 0.26, 0.75
+        lengths = [len(self.tokenize(s)) for s in sentences if len(self.tokenize(s)) > 0]
+        if not lengths:
+            return 0.50, 0.20
 
-        lengths = [len(self.tokenize(s)) for s in sentences]
-        lengths = [L for L in lengths if L > 0]
-        if len(lengths) < 2:
-            return 0.26, 0.75
+        # Single-sentence blocks in AI reports almost always have 13-28 words with flat cadence
+        if len(lengths) == 1:
+            L = lengths[0]
+            if 12 <= L <= 30:
+                return 0.22, 0.85
+            return 0.45, 0.35
 
         mean_len = statistics.mean(lengths)
         stdev_len = statistics.stdev(lengths)
@@ -197,24 +184,28 @@ class AcademicAIDetector:
         lag_diffs = [abs(lengths[i] - lengths[i - 1]) for i in range(1, len(lengths))]
         mean_lag_diff = statistics.mean(lag_diffs) / max(1.0, mean_len)
 
-        in_ai_band = sum(1 for L in lengths if 14 <= L <= 28)
+        in_ai_band = sum(1 for L in lengths if 13 <= L <= 28)
         band_concentration = in_ai_band / len(lengths)
 
         composite_burstiness = (0.55 * cv) + (0.45 * mean_lag_diff)
         return round(composite_burstiness, 4), round(band_concentration, 4)
 
     def calculate_syntactic_symmetry(self, sentences: list[str]) -> float:
-        if len(sentences) < 3:
-            return 0.38
+        if len(sentences) == 1:
+            sig = self._classify_opener_signature(sentences[0])
+            return 0.65 if sig in ("DET_NP", "CONJ_ADV", "PRON_SUBJ") else 0.25
+
+        if len(sentences) == 2:
+            s0 = self._classify_opener_signature(sentences[0])
+            s1 = self._classify_opener_signature(sentences[1])
+            return 0.72 if s0 == s1 else 0.32
 
         openers = [self._classify_opener_signature(s) for s in sentences]
         opener_counts = Counter(openers)
         most_common_ratio = opener_counts.most_common(1)[0][1] / len(sentences)
-
         adjacent_repeats = sum(
             1 for i in range(1, len(openers)) if openers[i] == openers[i - 1]
         ) / (len(openers) - 1)
-
         comma_counts = [s.count(",") for s in sentences]
         comma_mode_ratio = Counter(comma_counts).most_common(1)[0][1] / len(sentences)
 
@@ -238,66 +229,40 @@ class AcademicAIDetector:
                 weighted_sum += hits * weight
 
         density_score = (weighted_sum / max(1.0, word_count)) * 100.0
-
-        spin_hits = sum(1 for t in tokens if t in SPINNING_ARTIFACTS)
-        adv_ly_hits = sum(1 for t in tokens if len(t) > 6 and t.endswith("ly"))
-        purple_raw = (
-            (spin_hits * 3.5 + max(0.0, adv_ly_hits - (word_count * 0.035)) * 1.8) / word_count
-        ) * 100.0
-
-        return round(density_score, 3), round(min(100.0, purple_raw * 6.5), 2), flagged
+        return round(density_score, 3), 0.0, flagged
 
     def score_text(self, text: str) -> DetectionMetrics:
+        if self.is_heading_or_metadata(text):
+            return DetectionMetrics(
+                text=text, ai_probability=0.0, cyan_ai_score=0.0, purple_paraphrase_score=0.0,
+                perplexity_proxy=90.0, burstiness=0.65, syntactic_symmetry=0.15,
+                synthetic_density=0.0, flagged_phrases=[], sentence_count=1,
+                word_count=len(self.tokenize(text)),
+            )
+
         sentences = self.split_sentences(text)
         tokens = self.tokenize(text)
         word_count = len(tokens)
 
-        if word_count < 12:
-            return DetectionMetrics(
-                text=text,
-                ai_probability=0.0,
-                cyan_ai_score=0.0,
-                purple_paraphrase_score=0.0,
-                perplexity_proxy=85.0,
-                burstiness=0.58,
-                syntactic_symmetry=0.20,
-                synthetic_density=0.0,
-                flagged_phrases=[],
-                sentence_count=len(sentences),
-                word_count=word_count,
-            )
-
         perplexity_proxy = self.calculate_perplexity_proxy(tokens, text)
         burstiness, band_concentration = self.calculate_burstiness_and_pacing(sentences)
         symmetry = self.calculate_syntactic_symmetry(sentences)
-        synth_density, purple_base, flagged = self.calculate_synthetic_and_purple_risk(text, tokens)
+        synth_density, _, flagged = self.calculate_synthetic_and_purple_risk(text, tokens)
 
-        burst_deficit = max(0.0, 0.54 - burstiness) * 6.8
-        band_penalty = max(0.0, band_concentration - 0.40) * 3.8
-        perp_deficit = max(0.0, (63.0 - perplexity_proxy) / 13.5)
-        sym_penalty = max(0.0, (symmetry - 0.32) * 4.6)
-        lex_penalty = min(4.5, synth_density * 0.30 + len(flagged) * 0.60)
+        burst_deficit = max(0.0, 0.56 - burstiness) * 6.5
+        band_penalty = max(0.0, band_concentration - 0.38) * 3.8
+        perp_deficit = max(0.0, (66.0 - perplexity_proxy) / 11.5)
+        sym_penalty = max(0.0, (symmetry - 0.30) * 4.2)
+        lex_penalty = min(5.0, synth_density * 0.32 + len(flagged) * 0.65)
 
-        logit_z = (
-            -2.05
-            + burst_deficit
-            + band_penalty
-            + perp_deficit
-            + sym_penalty
-            + lex_penalty
-        )
+        logit_z = -1.85 + burst_deficit + band_penalty + perp_deficit + sym_penalty + lex_penalty
         cyan_prob = 100.0 / (1.0 + math.exp(-logit_z))
 
-        purple_structural = (
-            (band_concentration * 42.0)
-            + (symmetry * 38.0)
-            + (purple_base * 0.45)
-            - (max(0.0, burstiness - 0.48) * 65.0)
+        purple_score = max(
+            0.0,
+            min(99.0, (band_concentration * 38.0) + (symmetry * 35.0) - max(0.0, burstiness - 0.48) * 65.0),
         )
-        purple_score = max(0.0, min(99.0, purple_structural))
-
-        combined_prob = max(cyan_prob, cyan_prob * 0.65 + purple_score * 0.45)
-        combined_prob = round(max(1.0, min(99.4, combined_prob)), 1)
+        combined_prob = round(max(1.0, min(99.4, max(cyan_prob, cyan_prob * 0.7 + purple_score * 0.35))), 1)
 
         return DetectionMetrics(
             text=text,
@@ -314,7 +279,7 @@ class AcademicAIDetector:
         )
 
     def score_document(self, blocks: list[str]) -> DetectionMetrics:
-        valid_blocks = [b.strip() for b in blocks if len(self.tokenize(b)) >= 12]
+        valid_blocks = [b.strip() for b in blocks if not self.is_heading_or_metadata(b)]
         if not valid_blocks:
             return self.score_text(" ".join(blocks))
 
@@ -326,15 +291,13 @@ class AcademicAIDetector:
             w_len = len(self.tokenize(block))
             current_group.append(block)
             current_words += w_len
-            if current_words >= 220:
+            if current_words >= 200:
                 windows.append(" ".join(current_group))
                 current_group = [current_group[-1]] if len(current_group) > 1 else []
                 current_words = len(self.tokenize(current_group[0])) if current_group else 0
 
-        if current_group and (not windows or current_words >= 30):
+        if current_group:
             windows.append(" ".join(current_group))
-        if not windows:
-            windows = [" ".join(valid_blocks)]
 
         window_metrics = [self.score_text(w) for w in windows]
         block_metrics = [self.score_text(b) for b in valid_blocks]
@@ -342,17 +305,9 @@ class AcademicAIDetector:
         total_words = max(1, sum(m.word_count for m in block_metrics))
         total_win_words = max(1, sum(m.word_count for m in window_metrics))
 
-        accum = 0.0
-        for m in window_metrics:
-            if m.ai_probability >= 50.0:
-                effective = min(100.0, m.ai_probability * 1.15)
-            elif m.ai_probability >= 22.0:
-                effective = m.ai_probability
-            else:
-                effective = m.ai_probability * 0.45
-            accum += effective * m.word_count
-
+        accum = sum(m.ai_probability * m.word_count for m in window_metrics)
         overall_ai = round(min(99.5, accum / total_win_words), 1)
+
         all_flagged: list[str] = []
         for m in block_metrics:
             for p in m.flagged_phrases:
